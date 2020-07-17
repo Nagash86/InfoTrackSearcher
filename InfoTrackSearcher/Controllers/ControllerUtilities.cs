@@ -1,80 +1,80 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 
 namespace InfoTrackSearcher.Controllers
 {
     public static class ControllerUtilities
     {
-        public const string _infoTrackURL = "https://www.infotrack.com.au";
-        public const int _maxResultCount = 100;
+        private const string _infoTrackURL = "https://www.infotrack.com.au";
+        private const int _maxResultCount = 100;
+        private const int _resultsPerPage = 10;
 
-        public static bool GetSOEResults(string keywords, string url, string regexString, string pageString, out string returnResults, out string returnError)
+        public static async Task<string> GetSOEResults(string keywords, string url, string regexString, string pageString, int firstPageResultsCount)
         {
-            returnResults = string.Empty;
-            returnError = string.Empty;
-            var counter = 1;           
-            var searchResults = new List<Match>();
+            var returnResults = string.Empty;
+            var pageStartCounter = 0;
+            var tasks = new List<Task>();
 
-            // Loop, getting at least the top 100 results, retrieving the results using the supplied Regex from the raw HTML response
-            while (searchResults.Count < _maxResultCount)
+            // Asynchronously Loop, adding tasks to go fetch pages of results, totalling at least 100 results
+            for (int page = 1; page < (_maxResultCount / _resultsPerPage) + 1; page++)
             {
-                var htmlContent = string.Empty;
-
-                if (!ControllerUtilities.GetHTMLForURL(url + "/search?q=" + keywords.Replace(' ', '+') + "&" + pageString + "=" + searchResults.Count, out htmlContent, out returnError))
-                {
-                    return false;
-                };
-                searchResults.AddRange(Regex.Matches(htmlContent, regexString).ToList());
+                string passedURL = url + "/search?q=" + keywords.Replace(' ', '+') + "&" + pageString + "=" + pageStartCounter;
+                tasks.Add(GetResultsForPageAsync(passedURL, regexString, pageStartCounter));
+                pageStartCounter += page == 1 ? firstPageResultsCount : _resultsPerPage;
             }
 
-            // Search the top 100 results for the Infotrack URL, adding it to return URL
-            foreach (var searchResult in searchResults)
+            // Loop through each task processing the results
+            foreach (Task<Dictionary<int, Match>> task in tasks)
             {
-                if (searchResult.Value.Contains(ControllerUtilities._infoTrackURL) && counter <= _maxResultCount)
-                {
-                    returnResults = returnResults == string.Empty ? counter.ToString() : returnResults + ", " + counter.ToString();
-                }
+                await task;
 
-                counter += 1;
+                foreach (var item in task.Result)
+                {
+                    if (item.Value.Value.Contains(_infoTrackURL) && item.Key <= _maxResultCount)
+                    {
+                        returnResults = returnResults == string.Empty ? item.Key.ToString() : returnResults + ", " + item.Key.ToString();
+                    }
+                }
             }
 
             // If no instances of the InfoTrack URL is found, return 0 as a result
             if (returnResults == string.Empty) returnResults = "0";
 
-            return true;
+            return returnResults;
         }
 
-        public static bool GetHTMLForURL(string url, out string returnHtml, out string error)
+        private static async Task<Dictionary<int, Match>> GetResultsForPageAsync(string url, string regexString, int startingPoint)
         {
-            error = string.Empty;
-            returnHtml = string.Empty;
+            var results = new Dictionary<int, Match>();
+            var counter = 1;
 
-            try
+            // Get HTML Content from URL
+            var htmlContent = await GetHTMLForUrlAsync(url);
+
+            // Add results to matches
+            foreach (Match match in Regex.Matches(htmlContent, regexString).ToList())
             {
-                var webRequest = (HttpWebRequest)WebRequest.Create(url);
-                webRequest.Method = WebRequestMethods.Http.Get;
-                var webResponse = webRequest.GetResponse();
-                var streamReader = new StreamReader(webResponse.GetResponseStream(), System.Text.Encoding.UTF8);
-                returnHtml = streamReader.ReadToEnd();
-
-                streamReader.Close();
-                webResponse.Close();
-
-                return true;
+                results.Add(startingPoint + counter, match);
+                counter += 1;
             }
-            catch (UriFormatException)
+
+            return results;
+        }
+
+        private static async Task<string> GetHTMLForUrlAsync(string url)
+        {
+            var webRequest = (HttpWebRequest)WebRequest.Create(url);
+            webRequest.Method = WebRequestMethods.Http.Get;
+            using (WebResponse response = await webRequest.GetResponseAsync())
             {
-                error = "Invalid URL.";
-                return false;
-            }
-            catch (Exception ex)
-            {
-                error = ex.Message;
-                return false;
+                using (StreamReader responseStream = new StreamReader(response.GetResponseStream(), System.Text.Encoding.UTF8))
+                {
+                    return responseStream.ReadToEnd();
+                }
             }
         }
     }
